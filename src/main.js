@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
-import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
+import * as DrawingUtils from '@mediapipe/drawing_utils';
+
+const drawConnectors = DrawingUtils.drawConnectors || window.drawConnectors;
+const drawLandmarks = DrawingUtils.drawLandmarks || window.drawLandmarks;
 
 // Scene setup
 const scene = new THREE.Scene();
