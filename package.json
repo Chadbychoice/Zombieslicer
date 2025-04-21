@@ -9,10 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "three": "^0.162.0",
-    "@mediapipe/tasks-vision": "^0.10.12"
+    "@mediapipe/drawing_utils": "^0.3.1675466124",
+    "@mediapipe/tasks-vision": "^0.10.12",
+    "three": "^0.162.0"
   },
   "devDependencies": {
     "vite": "^5.1.4"
   }
-} 
+}

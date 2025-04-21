@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
 
 // Scene setup
 const scene = new THREE.Scene();
@@ -11,14 +12,17 @@ document.body.appendChild(renderer.domElement);
 // --- Constants --- >
 const HAND_CONFIDENCE = 0.5; // Minimum confidence score for hand detection/tracking
 const INDEX_FINGER_TIP = 8; // Index for the tip of the index finger landmark
-const SLICE_GESTURE_THRESHOLD = 0.05; // Minimum NDC distance for a valid slice
+const SLICE_GESTURE_THRESHOLD = 0.03; // Minimum NDC distance for a valid slice - DECREASED for sensitivity
 
 const FLOOR_Y = -2.5; // Define the ground level
 const MAX_BLOOD_PARTICLES = 50; // Pool size
-const SPAWN_INTERVAL = 5000; // milliseconds (5 seconds) - Increased frequency
+const INITIAL_SPAWN_INTERVAL = 2200; // Start at 2.2 seconds
+const MIN_SPAWN_INTERVAL = 700; // Minimum interval (0.7 seconds)
+const SPAWN_ACCELERATION = 0.995; // How quickly spawn interval decreases per spawn
+let currentSpawnInterval = INITIAL_SPAWN_INTERVAL;
 const ZOMBIE_START_Z = -20; // Start further away
 const ZOMBIE_END_Z = 3;   // Point at which they stop/get removed closer to camera
-const ZOMBIE_WALK_SPEED = 1.5; // Units per second
+const ZOMBIE_WALK_SPEED = 2.2; // Units per second - Faster zombies
 const ZOMBIE_ANIM_FPS = 10; // Animation frames per second
 const DAMPING = 0.95; // Damping factor for horizontal movement and rotation on floor
 const ZOMBIE_FRAME_COUNT = 16;
@@ -41,6 +45,13 @@ let allZombieFramesLoaded = false;
 let textureSize = new THREE.Vector2(1, 1); // Default size (will be set by first frame)
 const slicedPieces = [];
 let isSliced = false;
+
+// --- Hand Visualization --- >
+const handGroup = new THREE.Group();
+scene.add(handGroup);
+const landmarkMeshes = [];
+const LANDMARK_COUNT = 21;
+// < --- Hand Visualization --- 
 
 // --- Blood Splatter --- >
 const bloodTextures = [];
@@ -415,9 +426,10 @@ function calculateAndPerformSlice(targetZombie) {
 function performSlice(targetZombie, startUV, endUV) { 
     // Basic check (already sliced check below is more robust)
     if (!targetZombie || targetZombie.userData.isSliced) return;
-
-    // --- Mark zombie as sliced BEFORE async operations ---
-    targetZombie.userData.isSliced = true; 
+    // --- KILL COOLDOWN ---
+    const now = performance.now() / 1000;
+    if (now - lastZombieKillTime < ZOMBIE_KILL_COOLDOWN) return;
+    lastZombieKillTime = now;
 
     // 1. Get original mesh data
     const texture = targetZombie.material.uniforms.uTexture.value; // Get texture from material
@@ -499,44 +511,74 @@ function performSlice(targetZombie, startUV, endUV) {
 
     // --- Spawn Blood Splatter (using originalMatrix and dimensions) --- >
     if (bloodTexturesLoaded) {
-        const numBloodParticles = 8;
+        const numBloodParticles = 18;
         const centerUV = new THREE.Vector2().addVectors(startUV, endUV).multiplyScalar(0.5);
         const localX = (centerUV.x - 0.5) * planeWidth;
         const localY = (centerUV.y - 0.5) * planeHeight;
         // Use originalMatrix saved BEFORE removing the targetZombie
-        const spawnPosition = new THREE.Vector3(localX, localY, 0).applyMatrix4(originalMatrix); 
+        const spawnPosition = new THREE.Vector3(localX, localY, 0).applyMatrix4(originalMatrix);
 
         for (let i = 0; i < numBloodParticles; i++) {
             // Get a particle from the pool
             const particleData = bloodParticlePool.find(p => !p.sprite.visible);
-            if (!particleData) continue; 
+            if (!particleData) continue;
 
             const particle = particleData.sprite;
             particle.material.map = bloodTextures[Math.floor(Math.random() * bloodTextures.length)];
             particle.material.needsUpdate = true;
             particle.position.copy(spawnPosition);
-            particle.position.z += (Math.random() - 0.5) * 0.1; 
+            particle.position.z += (Math.random() - 0.5) * 0.1;
             particle.material.opacity = 1.0;
             particle.material.rotation = Math.random() * Math.PI * 2;
             const scale = (0.3 + Math.random() * 0.5) * originalScale.x; // Scale blood with zombie
             particle.scale.set(scale, scale, 1);
             particle.visible = true;
-            const angleOffset = (Math.random() - 0.5) * Math.PI * 0.8; 
-            const angle1 = Math.atan2(normalVectorWorld.y, normalVectorWorld.x) + angleOffset;
-            const angle2 = Math.atan2(-normalVectorWorld.y, -normalVectorWorld.x) + angleOffset;
-            const finalAngle = (Math.random() > 0.5) ? angle1 : angle2; 
-            const speed = (0.03 + Math.random() * 0.05) * originalScale.x; // Scale speed with zombie
-            particleData.velocity = new THREE.Vector2(
-                Math.cos(finalAngle) * speed,
-                Math.sin(finalAngle) * speed
-            );
-            particleData.rotationSpeed = (Math.random() - 0.5) * 0.1;
-            particleData.lifetime = 1.0 + Math.random() * 1.0; 
-            particleData.isOnFloor = false; 
-            particleData.despawnTimer = 0; // Reset despawn timer on spawn
+
+            // About 1/3 of the blood flies away in the cut direction (wall blood), rest falls to floor
+            const isWallBlood = (i < Math.floor(numBloodParticles / 3));
+            particleData.isWallBlood = isWallBlood;
+
+            if (isWallBlood) {
+                // Wall blood: flies in the cut direction, sticks to wall (ZOMBIE_START_Z)
+                const cutAngle = Math.atan2(sliceVectorUV.y, sliceVectorUV.x);
+                const angleOffset = (Math.random() - 0.5) * Math.PI * 0.25; // Less spread for wall blood
+                const finalAngle = cutAngle + angleOffset;
+                const speed = (0.09 + Math.random() * 0.08) * originalScale.x; // Faster for wall blood
+                particleData.velocity = new THREE.Vector3(
+                    Math.cos(finalAngle) * speed,
+                    Math.sin(finalAngle) * speed,
+                    -0.18 - Math.random() * 0.12 // Strong negative Z, toward wall
+                );
+                particleData.rotationSpeed = (Math.random() - 0.5) * 0.1;
+                particleData.lifetime = 1.2 + Math.random() * 0.7;
+                particleData.isOnFloor = false;
+                particleData.despawnTimer = 0;
+                particleData.stuckToWall = false;
+            } else {
+                // Floor blood: randomize direction, falls as before
+                const angleOffset = (Math.random() - 0.5) * Math.PI * 0.8;
+                const angle1 = Math.atan2(normalVectorWorld.y, normalVectorWorld.x) + angleOffset;
+                const angle2 = Math.atan2(-normalVectorWorld.y, -normalVectorWorld.x) + angleOffset;
+                const finalAngle = (Math.random() > 0.5) ? angle1 : angle2;
+                const speed = (0.03 + Math.random() * 0.05) * originalScale.x;
+                particleData.velocity = new THREE.Vector2(
+                    Math.cos(finalAngle) * speed,
+                    Math.sin(finalAngle) * speed
+                );
+                particleData.rotationSpeed = (Math.random() - 0.5) * 0.1;
+                particleData.lifetime = 1.0 + Math.random() * 1.0;
+                particleData.isOnFloor = false;
+                particleData.despawnTimer = 0;
+                particleData.stuckToWall = false;
+            }
         }
     }
     // < --- Spawn Blood Splatter ---
+
+    // --- SCORE: Add 50 points for slicing a zombie ---
+    score += 50;
+    updateScoreDisplay();
+    playCutSound();
 
     // Note: isSliced is now handled per-zombie via userData
     // isSliced = true; // Remove global flag setting
@@ -544,6 +586,50 @@ function performSlice(targetZombie, startUV, endUV) {
 
 // Animation loop
 const clock = new THREE.Clock(); // Clock for delta time
+
+// --- Audio Setup ---
+const bgMusic = new Audio('/sounds/music.mp3');
+bgMusic.loop = true;
+bgMusic.volume = 0.5;
+let musicStarted = false;
+
+const cutSound = new Audio('/sounds/cut.mp3');
+cutSound.volume = 0.7;
+
+const ouchSound = new Audio('/sounds/ouch.mp3');
+ouchSound.volume = 0.8;
+
+const zombieSounds = [
+    new Audio('/sounds/zom1.mp3'),
+    new Audio('/sounds/zom2.mp3'),
+    new Audio('/sounds/zom3.mp3')
+];
+zombieSounds.forEach(z => z.volume = 0.7);
+
+function playCutSound() {
+    cutSound.currentTime = 0;
+    cutSound.play();
+}
+function playOuchSound() {
+    ouchSound.currentTime = 0;
+    ouchSound.play();
+}
+function playRandomZombieSound() {
+    const idx = Math.floor(Math.random() * zombieSounds.length);
+    const sound = zombieSounds[idx];
+    sound.currentTime = 0;
+    sound.play();
+}
+
+// Start music on first user interaction (required by browsers)
+window.addEventListener('pointerdown', () => {
+    if (!musicStarted) {
+        bgMusic.play();
+        musicStarted = true;
+    }
+}, { once: true });
+
+// --- End Audio Setup ---
 
 function animate() {
     requestAnimationFrame(animate);
@@ -578,9 +664,18 @@ function animate() {
             // --- Removal Check --- >
             if (currentZ >= ZOMBIE_END_Z) { // Remove if too close
                 scene.remove(zombie);
-                // zombie.geometry.dispose(); // Don't dispose base geometry
                 zombie.material.dispose();
                 activeZombies.splice(i, 1);
+                // Lose a life and update hearts
+                if (!gameOver && lives > 0) {
+                    lives--;
+                    updateHeartsDisplay();
+                    flashScreenRed();
+                    playOuchSound();
+                    if (lives === 0) {
+                        showGameOver();
+                    }
+                }
                 continue; // Skip animation update for removed zombie
             }
         }
@@ -645,12 +740,46 @@ function animate() {
     if (bloodTexturesLoaded) {
         bloodParticlePool.forEach(particleData => {
             if (particleData.sprite.visible) {
-                if (!particleData.isOnFloor) {
-                    // Decrease lifetime only if in the air
+                if (particleData.isWallBlood) {
+                    // Wall blood logic
+                    if (!particleData.stuckToWall) {
+                        // Move in 3D (x, y, z)
+                        particleData.sprite.position.x += particleData.velocity.x;
+                        particleData.sprite.position.y += particleData.velocity.y;
+                        particleData.sprite.position.z += particleData.velocity.z;
+                        // Gravity (slight, so some arc)
+                        particleData.velocity.y -= 0.003;
+                        // Fade out as it flies
+                        if (particleData.lifetime < 0.5) {
+                            particleData.sprite.material.opacity = particleData.lifetime * 2;
+                        }
+                        // Stick to wall if z <= ZOMBIE_START_Z (background plane)
+                        if (particleData.sprite.position.z <= ZOMBIE_START_Z) {
+                            particleData.sprite.position.z = ZOMBIE_START_Z + 0.01 * (Math.random() - 0.5); // Slight random offset
+                            particleData.velocity.set(0, 0, 0);
+                            particleData.stuckToWall = true;
+                            particleData.despawnTimer = 0;
+                            particleData.sprite.material.opacity = 0.7 + Math.random() * 0.2;
+                        }
+                    } else {
+                        // Stuck to wall: fade out over time
+                        particleData.despawnTimer += deltaTime;
+                        if (particleData.despawnTimer > 4.5) {
+                            particleData.sprite.visible = false;
+                            particleData.sprite.material.opacity = 0;
+                            particleData.stuckToWall = false;
+                        }
+                    }
+                    // Lifetime still decreases
                     particleData.lifetime -= deltaTime;
-
+                    if (particleData.lifetime <= 0 && !particleData.stuckToWall) {
+                        particleData.sprite.visible = false;
+                        particleData.sprite.material.opacity = 0;
+                    }
+                } else if (!particleData.isOnFloor) {
+                    // Floor blood logic (as before)
+                    particleData.lifetime -= deltaTime;
                     if (particleData.lifetime <= 0) {
-                        // Hide if lifetime runs out before hitting floor
                         particleData.sprite.visible = false;
                         particleData.sprite.material.opacity = 0;
                     } else {
@@ -658,24 +787,21 @@ function animate() {
                         particleData.sprite.position.x += particleData.velocity.x;
                         particleData.sprite.position.y += particleData.velocity.y;
                         particleData.velocity.y -= 0.005; // Gravity for blood
-
                         // Apply rotation
                         particleData.sprite.material.rotation += particleData.rotationSpeed;
-
                         // Check for floor collision
                         if (particleData.sprite.position.y <= FLOOR_Y) {
-                            particleData.sprite.position.y = FLOOR_Y + Math.random() * 0.01; 
+                            particleData.sprite.position.y = FLOOR_Y + Math.random() * 0.01;
                             particleData.isOnFloor = true;
-                            particleData.velocity.set(0, 0); 
-                            particleData.rotationSpeed = 0; 
-                            particleData.sprite.material.rotation = 0; 
-                            particleData.sprite.material.opacity = 0.6 + Math.random() * 0.2; 
-                            particleData.despawnTimer = 0; // Start despawn timer
-                            // Optional: Change texture/scale for puddle look
+                            particleData.velocity.set(0, 0);
+                            particleData.rotationSpeed = 0;
+                            particleData.sprite.material.rotation = 0;
+                            particleData.sprite.material.opacity = 0.6 + Math.random() * 0.2;
+                            particleData.despawnTimer = 0;
                         } else {
                             // Fade out towards end of life only if airborne
-                            if (particleData.lifetime < 0.5) { 
-                                particleData.sprite.material.opacity = particleData.lifetime * 2; 
+                            if (particleData.lifetime < 0.5) {
+                                particleData.sprite.material.opacity = particleData.lifetime * 2;
                             }
                         }
                     }
@@ -683,18 +809,34 @@ function animate() {
                     // Is on floor (is a puddle)
                     particleData.despawnTimer += deltaTime;
                     if (particleData.despawnTimer >= DESPAWN_TIME) {
-                        // Despawn the puddle
                         particleData.sprite.visible = false;
                         particleData.sprite.material.opacity = 0;
                         // Reset for pooling (optional but good practice)
-                        particleData.isOnFloor = false; 
+                        particleData.isOnFloor = false;
                         particleData.despawnTimer = 0;
                     }
-                } 
+                }
             }
         });
     }
     // < --- Animate Blood Particles ---
+
+    // --- Random zombie sounds when close to camera ---
+    let lastZombieGroanTime = 0;
+    function maybePlayZombieGroan(deltaTime) {
+        const now = performance.now();
+        if (now - lastZombieGroanTime < 2000) return; // At most every 2s
+        for (const zombie of activeZombies) {
+            if (zombie.position.z > ZOMBIE_END_Z - 2) { // Close to camera
+                if (Math.random() < 0.03) { // 3% chance per frame if close
+                    playRandomZombieSound();
+                    lastZombieGroanTime = now;
+                    break;
+                }
+            }
+        }
+    }
+    maybePlayZombieGroan(deltaTime);
 
     renderer.render(scene, camera);
 }
@@ -705,8 +847,9 @@ animate();
 let spawnIntervalId = null;
 
 function spawnZombie() {
+    if (gameOver) return;
     // Ensure frames and geometry are ready
-    if (!allZombieFramesLoaded || !zombieGeometry) return; 
+    if (!allZombieFramesLoaded || !zombieGeometry) return;
 
     // Create material with the first frame
     const material = new THREE.ShaderMaterial({ 
@@ -752,12 +895,20 @@ function spawnZombie() {
 
     scene.add(newZombie);
     activeZombies.push(newZombie);
+
+    // Accelerate spawn rate
+    currentSpawnInterval = Math.max(MIN_SPAWN_INTERVAL, currentSpawnInterval * SPAWN_ACCELERATION);
+    if (spawnIntervalId) {
+        clearInterval(spawnIntervalId);
+        spawnIntervalId = setInterval(spawnZombie, currentSpawnInterval);
+    }
 }
 
 function startZombieSpawner() {
     if (spawnIntervalId) clearInterval(spawnIntervalId); // Clear existing interval if any
+    currentSpawnInterval = INITIAL_SPAWN_INTERVAL;
     spawnZombie(); // Spawn one immediately
-    spawnIntervalId = setInterval(spawnZombie, SPAWN_INTERVAL);
+    spawnIntervalId = setInterval(spawnZombie, currentSpawnInterval);
 }
 
 function stopZombieSpawner() {
@@ -792,19 +943,15 @@ let handLandmarker = undefined;
 let runningMode = "VIDEO"; // Or "IMAGE"
 let webcamRunning = false;
 const videoElement = document.getElementById("webcam");
+const canvasElement = document.getElementById("output_canvas"); // Get canvas element
+const canvasCtx = canvasElement.getContext("2d");             // Get canvas context
 let lastVideoTime = -1;
 let handResults = undefined;
 let enableWebcamButton;
+let previousFingerTipNDC = null; // Track finger position across frames
 
 // --- Slicing State (Now Hand-Based) --- >
-let isHandSlicing = false;
-let handSliceStartNDC = new THREE.Vector2();
-let handSliceEndNDC = new THREE.Vector2();
-let handSliceStartUV = new THREE.Vector2();
-let handSliceEndUV = new THREE.Vector2();
-let handSliceStartTime = -1;
-const SLICE_TIMEOUT = 1.0; // Max seconds for a slice gesture
-let handZombieToSlice = null;
+// REMOVED: isHandSlicing, handSliceStartNDC, handSliceEndNDC, handSliceStartUV, handSliceEndUV, handSliceStartTime, SLICE_TIMEOUT, handZombieToSlice
 // < --- Slicing State ---
 
 // --- MediaPipe Hand Landmarker Setup --- >
@@ -828,6 +975,24 @@ const createHandLandmarker = async () => {
         });
         console.log("[3] Hand Landmarker instance created.");
 
+        // --- Initialize 3D Hand Landmarks (Now a Line for Index Finger) --- >
+        // const landmarkGeometry = new THREE.SphereGeometry(0.01); // Smaller spheres
+        // const landmarkMaterial = new THREE.MeshBasicMaterial({ color: 0x00cccc }); // Cyan color
+        // for (let i = 0; i < LANDMARK_COUNT; i++) {
+        //     const mesh = new THREE.Mesh(landmarkGeometry, landmarkMaterial);
+        //     mesh.visible = false; // Initially hidden
+        //     handGroup.add(mesh);
+        //     landmarkMeshes.push(mesh);
+        // }
+        const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 5 }); // Bright cyan line
+        const points = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]; // MCP, PIP, DIP, TIP
+        const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+        const indexFingerLine = new THREE.Line(lineGeometry, lineMaterial);
+        indexFingerLine.visible = false;
+        handGroup.add(indexFingerLine);
+        // We'll reference indexFingerLine directly later, no need for landmarkMeshes array now
+        // < --- Initialize 3D Hand Landmarks --- 
+
         // Now that vision tasks are ready, initialize Three.js related loaders/assets
         console.log("[4] Loading assets...");
         loadAssets(); // Load zombie frames, background, blood etc.
@@ -845,13 +1010,8 @@ const createHandLandmarker = async () => {
 function addEnableWebcamButton() {
     console.log("[7] Inside addEnableWebcamButton function.");
     enableWebcamButton = document.createElement('button');
+    enableWebcamButton.id = 'enableWebcamButton'; // Assign ID for styling
     enableWebcamButton.textContent = 'ENABLE WEBCAM';
-    enableWebcamButton.style.position = 'absolute';
-    enableWebcamButton.style.top = '10px';
-    enableWebcamButton.style.left = '10px';
-    enableWebcamButton.style.zIndex = '100';
-    enableWebcamButton.style.padding = '10px';
-    enableWebcamButton.style.fontSize = '16px';
     enableWebcamButton.onclick = enableCam;
     document.body.appendChild(enableWebcamButton);
     console.log("[8] Webcam button appended to body.");
@@ -956,15 +1116,80 @@ function enableCam(event) {
 }
 
 // --- Prediction Loop --- >
-let lastGestureTime = 0;
+let lastGestureTime = 0; // Can likely remove this later if unused
 async function predictWebcam() {
     if (!webcamRunning) return;
+
+    // Set canvas dimensions to match video
+    canvasElement.width = videoElement.videoWidth;
+    canvasElement.height = videoElement.videoHeight;
 
     const startTimeMs = performance.now();
     if (lastVideoTime !== videoElement.currentTime && handLandmarker) {
         lastVideoTime = videoElement.currentTime;
         handResults = handLandmarker.detectForVideo(videoElement, startTimeMs);
     }
+
+    // --- Draw landmarks --- >
+    canvasCtx.save();
+    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    if (handResults && handResults.landmarks) {
+        for (const landmarks of handResults.landmarks) {
+            // Draw connectors (lines between landmarks)
+            drawConnectors(canvasCtx, landmarks, HandLandmarker.HAND_CONNECTIONS, {
+                color: '#00FF00', // Green lines
+                lineWidth: 5
+            });
+            // Draw landmarks (dots)
+            drawLandmarks(canvasCtx, landmarks, { 
+                color: '#FF0000', // Red dots
+                lineWidth: 2 
+            });
+        }
+    }
+    canvasCtx.restore();
+    // < --- Draw landmarks --- 
+
+    // --- Update 3D Hand Visualization --- >
+    if (handResults && handResults.landmarks && handResults.landmarks.length > 0) {
+        handGroup.visible = true;
+        const landmarks = handResults.landmarks[0]; // Use first detected hand
+        const indexFingerIndices = [5, 6, 7, 8]; // MCP, PIP, DIP, TIP
+        const points = [];
+        let allIndexLandmarksVisible = true;
+
+        for (let i = 0; i < indexFingerIndices.length; i++) {
+            const landmarkIndex = indexFingerIndices[i];
+            if (landmarks[landmarkIndex]) {
+                const lm = landmarks[landmarkIndex];
+                // Convert normalized (0-1) coords to NDC (-1 to 1)
+                const ndcX = (lm.x * 2 - 1) * -1; 
+                const ndcY = lm.y * -2 + 1; 
+                const ndcZ = -0.5;
+                
+                const worldVec = new THREE.Vector3(ndcX, ndcY, ndcZ);
+                worldVec.unproject(camera);
+                points.push(worldVec);
+            } else {
+                allIndexLandmarksVisible = false;
+                break; // Stop if any index landmark is missing
+            }
+        }
+
+        // Update the line geometry if all points are valid
+        const line = handGroup.children[0]; // Assumes line is the first child
+        if (allIndexLandmarksVisible && line instanceof THREE.Line) {
+            line.geometry.setFromPoints(points);
+            line.geometry.attributes.position.needsUpdate = true; 
+            line.visible = true;
+        } else if (line) {
+            line.visible = false;
+        }
+        
+    } else {
+        handGroup.visible = false; // Hide the whole group if no hands detected
+    }
+    // < --- Update 3D Hand Visualization --- 
 
     // Process hand results for slicing
     processHandData(handResults);
@@ -973,84 +1198,65 @@ async function predictWebcam() {
     window.requestAnimationFrame(predictWebcam);
 }
 
+// --- Gesture Recognition Helper --- >
+// REMOVED: isIndexFingerPointing function
+// < --- Gesture Recognition Helper --- 
+
 // --- Gesture Processing & Slicing --- >
 function processHandData(results) {
+    if (gameOver) return;
     if (results && results.landmarks && results.landmarks.length > 0) {
         const landmarks = results.landmarks[0]; // Use first detected hand
         const fingerTipRaw = landmarks[INDEX_FINGER_TIP]; // Normalized (0-1) video coords
         
-        // Add a check to ensure fingerTipRaw is defined before accessing properties
         if (!fingerTipRaw) {
-            console.warn("Index finger tip landmark not found in results.");
-            if (isHandSlicing) endHandSlice(); // End slice if landmark disappears
-            return; // Stop processing if landmark is missing
+            // Finger tip lost, clear previous position
+            previousFingerTipNDC = null; 
+            return;
         }
 
-        // Convert landmark coords to NDC (-1 to 1), flipping Y
-        const fingerTipNDC = new THREE.Vector2(
-            fingerTipRaw.x * 2 - 1,
-            fingerTipRaw.y * -2 + 1 // Flip Y
+        // Convert current landmark coords to NDC (-1 to 1), flipping Y
+        const currentFingerTipNDC = new THREE.Vector2(
+            (fingerTipRaw.x * 2 - 1) * -1, // Correct for mirrored view
+            fingerTipRaw.y * -2 + 1      // Flip Y
         );
 
-        const currentTime = performance.now() / 1000; // Time in seconds
+        // --- Frame-to-Frame Slicing Check --- >
+        if (previousFingerTipNDC) {
+            const distance = currentFingerTipNDC.distanceTo(previousFingerTipNDC);
 
-        // --- Simple Gesture Logic: Look for index finger tip --- 
-        // Refine this: Check for specific pose (e.g., index finger extended) or speed?
-        const isFingerPresent = true; // Assume present if landmarks detected
+            if (distance > SLICE_GESTURE_THRESHOLD) {
+                // Potential slice: Check intersection from previous point
+                const startHitData = getUVCoordsFromNDC(previousFingerTipNDC);
+                
+                if (startHitData && startHitData.object) { // Must start on a zombie
+                    const targetZombie = startHitData.object;
+                    const startUV = startHitData.uv;
 
-        if (isFingerPresent) {
-            if (!isHandSlicing) {
-                // Start potential slice
-                isHandSlicing = true;
-                handSliceStartNDC.copy(fingerTipNDC);
-                handSliceStartTime = currentTime;
-                // Check if the start point hits a zombie
-                const hitData = getUVCoordsFromNDC(handSliceStartNDC);
-                if (hitData) {
-                    handSliceStartUV.copy(hitData.uv);
-                    handZombieToSlice = hitData.object;
-                } else {
-                    handZombieToSlice = null; // Didn't start on a zombie
+                    // Check where the current point lands
+                    const endHitData = getUVCoordsFromNDC(currentFingerTipNDC);
+                    const endUVIfValid = (endHitData && endHitData.object === targetZombie) ? endHitData.uv : null;
+
+                    // Perform the slice calculation based on this frame's movement
+                    calculateAndPerformSliceHand(
+                        targetZombie, 
+                        startUV, 
+                        previousFingerTipNDC, // Pass previous NDC
+                        currentFingerTipNDC,  // Pass current NDC
+                        endUVIfValid          // Pass current UV if valid
+                    );
                 }
-            } else {
-                // Continue slicing - update end point for potential slice
-                handSliceEndNDC.copy(fingerTipNDC);
-                 // Timeout check
-                 if (currentTime - handSliceStartTime > SLICE_TIMEOUT) {
-                     resetHandSliceState();
-                 }
             }
-        } else { 
-             // Finger lost or gesture ended
-             if (isHandSlicing) {
-                 endHandSlice();
-             }
         }
+        // < --- Frame-to-Frame Slicing Check --- 
+
+        // Update previous position for the next frame
+        previousFingerTipNDC = currentFingerTipNDC.clone();
 
     } else {
-        // No hands detected
-        if (isHandSlicing) {
-             endHandSlice(); // End slice if hand disappears
-        }
+        // No hands detected, clear previous position
+        previousFingerTipNDC = null; 
     }
-}
-
-function endHandSlice() {
-    if (isHandSlicing && handZombieToSlice && handSliceStartNDC.distanceTo(handSliceEndNDC) > SLICE_GESTURE_THRESHOLD) {
-        // Check if end point hit the same zombie
-        const endHitData = getUVCoordsFromNDC(handSliceEndNDC);
-        const endValid = (endHitData && endHitData.object === handZombieToSlice);
-        
-        // Call calculation function (needs modification to accept NDC)
-        calculateAndPerformSliceHand(handZombieToSlice, endValid ? endHitData.uv : null);
-    }
-    resetHandSliceState();
-}
-
-function resetHandSliceState() {
-    isHandSlicing = false;
-    handZombieToSlice = null;
-    handSliceStartTime = -1;
 }
 
 // --- Updated Raycasting/Slicing Logic --- >
@@ -1068,44 +1274,120 @@ function getUVCoordsFromNDC(ndcCoords) {
     }
 }
 
-// New function to handle slice calculation from hand input
-function calculateAndPerformSliceHand(targetZombie, endUVIfValid) {
-    if (!targetZombie) return;
+// New function signature to handle slice calculation from frame-to-frame input
+function calculateAndPerformSliceHand(targetZombie, startUV, startNDC, endNDC, endUVIfValid) {
+    if (!targetZombie || targetZombie.userData.isSliced) return; // Added sliced check here too
 
-    let finalStartUV = handSliceStartUV.clone(); // Already have this from start
+    let finalStartUV = startUV.clone(); // Use the provided start UV
     let finalEndUV = new THREE.Vector2();
 
-    const directionNDC = new THREE.Vector2().subVectors(handSliceEndNDC, handSliceStartNDC).normalize();
+    // Calculate direction based on the NDC movement of this frame
+    const directionNDC = new THREE.Vector2().subVectors(endNDC, startNDC).normalize();
+    // Check for zero vector to prevent NaN issues
+    if (directionNDC.lengthSq() < 1e-6) { 
+        console.warn("Slice direction vector is zero.");
+        return;
+    }
     const directionUVApprox = new THREE.Vector2(directionNDC.x, directionNDC.y * camera.aspect).normalize();
+    if (directionUVApprox.lengthSq() < 1e-6) { 
+        console.warn("Approximate UV direction vector is zero.");
+        return;
+    }
 
     if (endUVIfValid) {
         // End point hit the target zombie
         finalEndUV.copy(endUVIfValid);
     } else {
-        // End missed: Extend line from startUV outwards
+        // End missed: Extend line from startUV outwards along the calculated direction
         const extendedEnd = intersectUVSquare(finalStartUV, directionUVApprox);
         if (!extendedEnd) {
              console.warn("Failed to extend slice line to UV edge."); 
-             return; 
+             return; // Can't perform slice if extension fails
         }
         finalEndUV.copy(extendedEnd);
     }
 
+    // Final check for point distance before performing the slice
     if (finalStartUV.distanceTo(finalEndUV) < 0.001) {
-        console.warn("Slice points too close after calculation.");
+        console.warn("Final slice points too close after calculation/extension.");
         return;
     }
+
+    // Clamp UV coordinates to [0, 1] just in case
     finalStartUV.clampScalar(0, 1);
     finalEndUV.clampScalar(0, 1);
 
+    // Call the actual slicing function
     performSlice(targetZombie, finalStartUV, finalEndUV);
 }
-
-// performSlice remains mostly the same (accepts targetZombie, startUV, endUV)
-// ... (performSlice definition) ...
 
 // --- Initialization --- >
 createHandLandmarker(); // Start MediaPipe loading
 // animate(); // Original animate() call (KEEP THIS ONE)
 
 // ... (rest of functions: startZombieSpawner, stopZombieSpawner, calculateFloorY, calculatePathWidth) ... 
+// ... (rest of functions: startZombieSpawner, stopZombieSpawner, calculateFloorY, calculatePathWidth) ... 
+
+// --- Score System --- >
+let score = 0;
+let lives = 3;
+let gameOver = false;
+let lastZombieKillTime = 0;
+const ZOMBIE_KILL_COOLDOWN = 0.2; // seconds
+
+function updateScoreDisplay() {
+    const el = document.getElementById('scoreDisplay');
+    if (el) {
+        el.textContent = score.toString().padStart(6, '0');
+    }
+}
+function updateHeartsDisplay() {
+    // Top heart is heart1, then heart2, then heart3 (top to bottom)
+    for (let i = 1; i <= 3; i++) {
+        const heart = document.getElementById('heart' + i);
+        if (heart) {
+            // heart1 is empty if lives < 3, heart2 if lives < 2, heart3 if lives < 1
+            heart.src = (lives >= 4 - i) ? '/sprites/heart_full.png' : '/sprites/heart_empty.png';
+        }
+    }
+}
+function flashScreenRed() {
+    let flash = document.createElement('div');
+    flash.className = 'screen-flash';
+    document.body.appendChild(flash);
+    setTimeout(() => flash.remove(), 300);
+}
+function showGameOver() {
+    gameOver = true;
+    // Stop zombie spawner
+    stopZombieSpawner();
+    // Hide hearts and score
+    document.getElementById('heartsContainer').style.display = 'none';
+    document.getElementById('scoreDisplay').style.display = 'none';
+    // Show overlay
+    const overlay = document.getElementById('gameOverOverlay');
+    overlay.style.display = 'flex';
+    // Set final score
+    const finalScore = document.getElementById('finalScore');
+    if (finalScore) finalScore.textContent = score.toString().padStart(6, '0');
+    // Stop webcam
+    if (webcamRunning) enableCam();
+}
+// Play again button logic
+if (typeof window !== 'undefined') {
+    window.addEventListener('DOMContentLoaded', () => {
+        const btn = document.getElementById('playAgainBtn');
+        if (btn) btn.onclick = () => window.location.reload();
+    });
+}
+
+// At the end of the file or after DOMContentLoaded, initialize the score and hearts display:
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        updateScoreDisplay();
+        updateHeartsDisplay();
+    });
+} else {
+    updateScoreDisplay();
+    updateHeartsDisplay();
+} 

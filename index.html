@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zombie Slicer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <style>
         body {
             margin: 0;
@@ -12,10 +13,144 @@
         canvas {
             display: block;
         }
+        /* Style for the webcam video and overlay canvas */
+        #webcam-container {
+            position: absolute;
+            top: 10px; /* Adjust position as needed */
+            left: 10px; /* Adjust position as needed */
+            width: 320px; /* Adjust size as needed */
+            height: 240px; /* Adjust size as needed */
+            border: 1px solid black; /* Optional border */
+            z-index: 10; /* Ensure it's above the game canvas */
+        }
+        #webcam {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            /* Flip horizontally for a mirror effect if needed */
+            transform: scaleX(-1); 
+        }
+        #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        /* Move the button below the webcam view */
+        #enableWebcamButton { 
+            position: absolute;
+            top: 260px; /* Below the container */
+            left: 10px;
+            z-index: 100;
+            padding: 10px;
+            font-size: 16px;
+        }
+        /* Score display styling */
+        #scoreDisplay {
+            position: fixed;
+            top: 24px;
+            right: 32px;
+            color: #fff;
+            font-family: 'Press Start 2P', monospace, sans-serif;
+            font-size: 2rem;
+            text-shadow: 2px 2px 0 #000, 4px 4px 0 #222;
+            z-index: 1000;
+            letter-spacing: 2px;
+            user-select: none;
+        }
+        #heartsContainer {
+            position: absolute;
+            top: 10px;
+            left: 350px; /* To the right of webcam-container (320px + margin) */
+            height: 240px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: flex-start;
+            z-index: 20;
+            gap: 12px;
+        }
+        .heart {
+            width: 48px;
+            height: 48px;
+            image-rendering: pixelated;
+            filter: drop-shadow(2px 2px 0 #000);
+        }
+        .screen-flash {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(255,0,0,0.4);
+            z-index: 2000;
+            pointer-events: none;
+            animation: flashRed 0.3s;
+        }
+        @keyframes flashRed {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+        #gameOverOverlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #000;
+            z-index: 3000;
+            color: #fff;
+            font-family: 'Press Start 2P', monospace, sans-serif;
+            text-align: center;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            font-size: 2.5rem;
+            letter-spacing: 2px;
+        }
+        #gameOverOverlay .final-score {
+            font-size: 1.5rem;
+            margin-top: 32px;
+            margin-bottom: 32px;
+        }
+        #playAgainBtn {
+            font-family: 'Press Start 2P', monospace, sans-serif;
+            font-size: 1.2rem;
+            padding: 18px 36px;
+            background: #222;
+            color: #fff;
+            border: 2px solid #fff;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-top: 16px;
+            transition: background 0.2s, color 0.2s;
+        }
+        #playAgainBtn:hover {
+            background: #fff;
+            color: #222;
+        }
     </style>
 </head>
 <body>
-    <video id="webcam" autoplay playsinline style="position: absolute; left: -9999px;"></video>
+    <div id="scoreDisplay">000000</div>
+    <!-- Container for webcam video and overlay canvas -->
+    <div id="webcam-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+    <div id="heartsContainer">
+        <img src="/sprites/heart_full.png" class="heart" id="heart1">
+        <img src="/sprites/heart_full.png" class="heart" id="heart2">
+        <img src="/sprites/heart_full.png" class="heart" id="heart3">
+    </div>
+    <div id="gameOverOverlay">
+        <div style="margin-top: 15vh;"></div>
+        <div>GAME OVER</div>
+        <div class="final-score">SCORE: <span id="finalScore">000000</span></div>
+        <button id="playAgainBtn">PLAY AGAIN</button>
+    </div>
+    
+    <!-- The main game canvas remains -->
+    <!-- <canvas id="game_canvas"></canvas>  <- Assuming your THREE.js renderer uses this -->
+
     <script type="module" src="/src/main.js"></script>
 </body>
 </html> 
