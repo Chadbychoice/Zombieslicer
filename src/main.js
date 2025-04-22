@@ -38,6 +38,9 @@ const RED_LINE_Y_OFFSET = 0.0; // Offset of the "red line" spawn height relative
 // < --- Perspective Constants ---
 // < --- Constants ---
 
+// --- Platform Detection (must be after DOM element access is possible, but before listeners) ---
+const isMobile = document.documentElement.classList.contains('mobile');
+
 // Texture Loading and Mesh Creation
 const textureLoader = new THREE.TextureLoader();
 const activeZombies = []; // Array to hold active zombie meshes
