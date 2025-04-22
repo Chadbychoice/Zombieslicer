@@ -224,8 +224,12 @@ textureLoader.load('/background/dungeon.png',
 );
 // < --- Load Background ---
 
-// Camera position
-camera.position.z = 5;
+// Adjust camera settings for mobile devices
+if (isMobileDevice) {
+    camera.position.z = 10; // Adjust the Z position for a wider view on mobile
+    camera.fov = 75; // Adjust the field of view if necessary
+    camera.updateProjectionMatrix();
+}
 
 // Mouse tracking
 const mouseNDC = new THREE.Vector2(); // Current mouse position in NDC
@@ -587,15 +591,16 @@ function playRandomZombieSound() {
     sound.play();
 }
 
-// Start music on first user interaction (required by browsers)
-window.addEventListener('pointerdown', () => {
+// Ensure music plays on first interaction
+function startMusic() {
     if (!musicStarted) {
         bgMusic.play();
         musicStarted = true;
     }
-}, { once: true });
+}
 
-// --- End Audio Setup ---
+document.addEventListener('touchstart', startMusic, { once: true });
+document.addEventListener('click', startMusic, { once: true });
 
 function animate() {
     requestAnimationFrame(animate);
