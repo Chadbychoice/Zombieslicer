@@ -39,7 +39,7 @@ const RED_LINE_Y_OFFSET = 0.0; // Offset of the "red line" spawn height relative
 // < --- Constants ---
 
 // --- Platform Detection (must be after DOM element access is possible, but before listeners) ---
-const isMobile = document.documentElement.classList.contains('mobile');
+const isMobileDevice = /Mobi|Android/i.test(navigator.userAgent);
 
 // Texture Loading and Mesh Creation
 const textureLoader = new THREE.TextureLoader();
@@ -1286,11 +1286,62 @@ function calculateAndPerformSliceHand(targetZombie, startUV, startNDC, endNDC, e
 }
 
 // --- Initialization --- >
-createHandLandmarker(); // Start MediaPipe loading
-// animate(); // Original animate() call (KEEP THIS ONE)
+// Only initialize hand landmarker and webcam button on non-mobile devices
+if (!isMobileDevice) {
+    createHandLandmarker();
+    addEnableWebcamButton();
+} else {
+    // Initialize touch event listeners for mobile swipe-to-slice
+    document.addEventListener('touchstart', handleTouchStart, false);
+    document.addEventListener('touchmove', handleTouchMove, false);
+    document.addEventListener('touchend', handleTouchEnd, false);
+    // Ensure music starts on first interaction
+    window.addEventListener('touchstart', () => {
+        if (!musicStarted) {
+            bgMusic.play();
+            musicStarted = true;
+        }
+    }, { once: true });
+}
 
-// ... (rest of functions: startZombieSpawner, stopZombieSpawner, calculateFloorY, calculatePathWidth) ... 
-// ... (rest of functions: startZombieSpawner, stopZombieSpawner, calculateFloorY, calculatePathWidth) ... 
+// Function to handle touch start
+function handleTouchStart(event) {
+    const touch = event.touches[0];
+    startTouchX = touch.clientX;
+    startTouchY = touch.clientY;
+}
+
+// Function to handle touch move
+function handleTouchMove(event) {
+    const touch = event.touches[0];
+    currentTouchX = touch.clientX;
+    currentTouchY = touch.clientY;
+}
+
+// Function to handle touch end
+function handleTouchEnd(event) {
+    const endTouchX = currentTouchX;
+    const endTouchY = currentTouchY;
+    // Implement slicing logic based on touch movement
+    const deltaX = endTouchX - startTouchX;
+    const deltaY = endTouchY - startTouchY;
+    if (Math.abs(deltaX) > SWIPE_THRESHOLD || Math.abs(deltaY) > SWIPE_THRESHOLD) {
+        // Call slicing function
+        performSliceWithTouch(startTouchX, startTouchY, endTouchX, endTouchY);
+    }
+}
+
+// Function to perform slice with touch
+function performSliceWithTouch(startX, startY, endX, endY) {
+    const startHitData = getUVCoords(startX, startY);
+    const endHitData = getUVCoords(endX, endY);
+    if (startHitData && endHitData) {
+        const targetZombie = startHitData.object;
+        if (targetZombie === endHitData.object) {
+            performSlice(targetZombie, startHitData.uv, endHitData.uv);
+        }
+    }
+}
 
 // --- Score System --- >
 function updateScoreDisplay() {
@@ -1353,7 +1404,7 @@ if (document.readyState === 'loading') {
 // --- Desktop Mouse Slicing Event Listeners (Always added) ---
 window.addEventListener('mousedown', (event) => {
     // Check if assets are loaded
-    if (!zombieGeometry || isMobile) return; // Ignore on mobile or if assets not ready
+    if (!zombieGeometry || isMobileDevice) return; // Ignore on mobile or if assets not ready
 
     // Always record NDC start
     updateMousePosition(event); 
@@ -1374,7 +1425,7 @@ window.addEventListener('mousedown', (event) => {
 });
 
 window.addEventListener('mousemove', (event) => {
-    if (isSlicing && !isMobile) { // Only track mouse movement slicing on desktop
+    if (isSlicing && !isMobileDevice) { // Only track mouse movement slicing on desktop
          updateMousePosition(event); 
          // Optional: Update visual feedback line during drag
     }
@@ -1382,7 +1433,7 @@ window.addEventListener('mousemove', (event) => {
 
 window.addEventListener('mouseup', (event) => {
     // Ensure we started slicing on a zombie (and are on desktop)
-    if (isSlicing && zombieToSlice && !isMobile) { 
+    if (isSlicing && zombieToSlice && !isMobileDevice) { 
         updateMousePosition(event);
         sliceEndNDC.copy(mouseNDC);
 
@@ -1410,7 +1461,7 @@ window.addEventListener('mouseup', (event) => {
 });
 
 // Moved this block to the end after all functions are defined
-if (!isMobile) {
+if (!isMobileDevice) {
   // Desktop: Initialize hand tracking and mouse controls
   console.log('Desktop mode detected. Initializing hand tracking.');
   // Mouse listeners are already added globally

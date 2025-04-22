@@ -127,7 +127,18 @@
             background: #fff;
             color: #222;
         }
+        /* Hide webcam elements on mobile */
+        html.mobile #webcam-container,
+        html.mobile #enableWebcamButton {
+            display: none;
+        }
     </style>
+    <script>
+      // Add mobile class to body for CSS targeting
+      if (/Mobi|Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(navigator.userAgent)) {
+        document.documentElement.classList.add('mobile');
+      }
+    </script>
 </head>
 <body>
     <div id="scoreDisplay">000000</div>
