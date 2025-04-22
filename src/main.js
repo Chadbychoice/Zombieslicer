@@ -241,24 +241,35 @@ let zombieToSlice = null; // Store the specific zombie hit on mousedown
 
 let isSlicing = false;
 
-// Helper function to get UV coords from mouse event
-function getUVCoords(event) {
+// --- Touch State (for mobile) ---
+let isTouchSlicing = false;
+const touchStartNDC = new THREE.Vector2();
+const touchEndNDC = new THREE.Vector2();
+const touchStartUV = new THREE.Vector2();
+const touchEndUV = new THREE.Vector2();
+let touchStartValid = false;
+let touchEndValid = false;
+let touchZombieToSlice = null;
+// < --- Touch State ---
+
+// Helper function to get UV coords from screen coordinates (clientX, clientY)
+function getUVCoords(clientX, clientY) {
     // Ensure we have zombies to test against
     if (activeZombies.length === 0) {
         return null;
     }
+
+    // Calculate NDC from client coordinates
+    const ndc = new THREE.Vector2();
+    ndc.x = (clientX / window.innerWidth) * 2 - 1;
+    ndc.y = -(clientY / window.innerHeight) * 2 + 1; 
     
-    // Update mouseNDC based on event
-    mouseNDC.x = (event.clientX / window.innerWidth) * 2 - 1;
-    mouseNDC.y = -(event.clientY / window.innerHeight) * 2 + 1; 
-    
-    // Update the picking ray with the camera and mouse position
-    raycaster.setFromCamera(mouseNDC, camera);
+    // Update the picking ray with the camera and NDC position
+    raycaster.setFromCamera(ndc, camera);
     
     // Calculate objects intersecting the picking ray - test against ACTIVE zombies
-    // Filter out zombies that might already be marked as sliced if needed
     const zombiesToTest = activeZombies.filter(z => !z.userData.isSliced); 
-    const intersects = raycaster.intersectObjects(zombiesToTest); // Use intersectObjects
+    const intersects = raycaster.intersectObjects(zombiesToTest); 
     
     if (intersects.length > 0) {
         // Return the UV coordinates AND the intersected object (zombie mesh)
@@ -1348,7 +1359,7 @@ window.addEventListener('mousedown', (event) => {
     updateMousePosition(event); 
     sliceStartNDC.copy(mouseNDC);
     
-    const hitData = getUVCoords(event); // Now returns { uv, object }
+    const hitData = getUVCoords(event.clientX, event.clientY); // Use refactored function
     if (hitData) {
         sliceStartUV.copy(hitData.uv);
         sliceStartValid = true;
@@ -1377,7 +1388,7 @@ window.addEventListener('mouseup', (event) => {
 
         // We don't strictly need the end UV if we allow ending off-mesh
         // but we do need the end NDC for direction calculation
-        const hitData = getUVCoords(event);
+        const hitData = getUVCoords(event.clientX, event.clientY); // Use refactored function
         if (hitData && hitData.object === zombieToSlice) { // Check if we ended on the *same* zombie
             sliceEndUV.copy(hitData.uv);
             sliceEndValid = true;
@@ -1407,5 +1418,93 @@ if (!isMobile) {
 } else {
   // Mobile: Initialize touch controls
   console.log('Mobile mode detected. Initializing touch controls.');
-  let touchStartNDC = null;
+  // Add touch event listeners
+  window.addEventListener('touchstart', (event) => {
+      if (!zombieGeometry) return; // Assets not ready
+
+      // Use the first touch point
+      const touch = event.touches[0];
+      if (!touch) return;
+
+      // Calculate NDC
+      touchStartNDC.x = (touch.clientX / window.innerWidth) * 2 - 1;
+      touchStartNDC.y = -(touch.clientY / window.innerHeight) * 2 + 1;
+
+      const hitData = getUVCoords(touch.clientX, touch.clientY);
+      if (hitData) {
+          touchStartUV.copy(hitData.uv);
+          touchStartValid = true;
+          touchZombieToSlice = hitData.object;
+          isTouchSlicing = true;
+      } else {
+          touchStartValid = false;
+          touchZombieToSlice = null;
+          isTouchSlicing = false;
+      }
+      touchEndValid = false; // Reset end validity
+  }, { passive: true }); // Use passive for performance if not preventing default
+
+  window.addEventListener('touchmove', (event) => {
+      if (!isTouchSlicing) return;
+      // Optional: Could update a visual line here if needed
+      // For slicing, we only need start and end points
+  }, { passive: true });
+
+  window.addEventListener('touchend', (event) => {
+      if (!isTouchSlicing || !touchZombieToSlice) {
+          // Reset if not slicing or no zombie target
+          isTouchSlicing = false;
+          touchStartValid = false;
+          touchEndValid = false;
+          touchZombieToSlice = null;
+          return;
+      }
+
+      // Use changedTouches as touches will be empty
+      const touch = event.changedTouches[0];
+      if (!touch) { // Should exist, but check just in case
+          isTouchSlicing = false;
+          touchStartValid = false;
+          touchEndValid = false;
+          touchZombieToSlice = null;
+          return;
+      }
+
+      // Calculate end NDC
+      touchEndNDC.x = (touch.clientX / window.innerWidth) * 2 - 1;
+      touchEndNDC.y = -(touch.clientY / window.innerHeight) * 2 + 1;
+
+      const hitData = getUVCoords(touch.clientX, touch.clientY);
+      if (hitData && hitData.object === touchZombieToSlice) {
+          touchEndUV.copy(hitData.uv);
+          touchEndValid = true;
+      } else {
+          touchEndValid = false;
+      }
+
+      // Check distance and perform slice
+      if (touchStartNDC.distanceTo(touchEndNDC) > 0.02) { // Use same threshold as mouse
+          // --- Adapt calculateAndPerformSlice logic (or call it) ---
+          // We need to provide it with the correct start/end UVs and zombie
+          // Re-using the mouse state variables (sliceStartUV, sliceEndUV) might be easiest
+          // if calculateAndPerformSlice directly uses those global variables.
+          
+          sliceStartValid = touchStartValid; // Transfer validity
+          sliceEndValid = touchEndValid;     // Transfer validity
+          sliceStartUV.copy(touchStartUV);   // Copy touch UVs to global slice UVs
+          sliceEndUV.copy(touchEndUV);       // Copy touch UVs to global slice UVs
+          sliceStartNDC.copy(touchStartNDC); // Copy touch NDCs for direction calculation
+          sliceEndNDC.copy(touchEndNDC);     // Copy touch NDCs for direction calculation
+
+          // Now call the existing slice calculation function
+          calculateAndPerformSlice(touchZombieToSlice); 
+          // ---------------------------------------------------------
+      }
+
+      // Reset touch state
+      isTouchSlicing = false;
+      touchStartValid = false;
+      touchEndValid = false;
+      touchZombieToSlice = null;
+  });
 } 
