@@ -1272,7 +1272,7 @@ function calculateAndPerformSliceHand(targetZombie, startUV, startNDC, endNDC, e
 }
 
 // --- Initialization --- >
-createHandLandmarker(); // Start MediaPipe loading
+// createHandLandmarker(); // Moved initialization to the end
 // animate(); // Original animate() call (KEEP THIS ONE)
 
 // ... (rest of functions: startZombieSpawner, stopZombieSpawner, calculateFloorY, calculatePathWidth) ... 
@@ -1335,3 +1335,78 @@ if (document.readyState === 'loading') {
     updateScoreDisplay();
     updateHeartsDisplay();
 } 
+
+// Mobile: Use touch events for swipe slicing
+console.log('Mobile mode detected.');
+
+// Ensure DOM is ready before trying to hide elements (backup for CSS)
+document.addEventListener('DOMContentLoaded', () => {
+    const webcamContainer = document.getElementById('webcam-container');
+    if (webcamContainer) webcamContainer.style.display = 'none';
+    const webcamBtn = document.getElementById('enableWebcamButton');
+    if (webcamBtn) webcamBtn.style.display = 'none';
+    console.log('Mobile: Attempted to hide webcam UI via JS.');
+});
+
+let touchStartNDC = null;
+let touchEndNDC = null;
+let touchStartUV = null;
+let touchEndUV = null;
+
+window.addEventListener('touchstart', (event) => {
+    console.log('Touch Start Fired'); // Check if event fires
+    if (event.touches.length > 0) {
+        const touch = event.touches[0];
+        touchStartNDC = new THREE.Vector2(touch.clientX, touch.clientY);
+        touchStartUV = getUVCoords(event);
+        if (touchStartUV) {
+            touchZombieToSlice = touchStartUV.object;
+        }
+    }
+}, { passive: false });
+
+window.addEventListener('touchend', (event) => {
+    console.log('Touch End Fired'); // Check if event fires
+    if (!touchStartNDC || !touchZombieToSlice || gameOver) {
+        console.log('Touch End Aborted: No start data or game over.');
+        touchStartNDC = null; // Ensure state is reset
+        touchZombieToSlice = null;
+        touchEndNDC = null;
+        touchEndUV = null;
+    } else {
+        touchEndNDC = new THREE.Vector2(event.touches[0].clientX, event.touches[0].clientY);
+        touchEndUV = getUVCoords(event);
+        if (touchEndUV && touchEndUV.object === touchZombieToSlice) {
+            calculateAndPerformSlice(touchZombieToSlice);
+            touchStartNDC = null;
+            touchZombieToSlice = null;
+            touchEndNDC = null;
+            touchEndUV = null;
+        }
+    }
+    console.log('Touch Start: NDC=', touchStartNDC, 'Hit Zombie=', touchZombieToSlice); // Log start data
+}, { passive: false });
+
+console.log('Mobile touch listeners added.'); // Confirm listeners are added
+
+window.addEventListener('touchend', (event) => {
+    console.log('Touch End Fired'); // Check if event fires
+    if (!touchStartNDC || !touchZombieToSlice || gameOver) {
+        console.log('Touch End Aborted: No start data or game over.');
+        touchStartNDC = null; // Ensure state is reset
+        touchZombieToSlice = null;
+        touchEndNDC = null;
+        touchEndUV = null;
+    } else {
+        touchEndNDC = new THREE.Vector2(event.touches[0].clientX, event.touches[0].clientY);
+        touchEndUV = getUVCoords(event);
+        if (touchEndUV && touchEndUV.object === touchZombieToSlice) {
+            calculateAndPerformSlice(touchZombieToSlice);
+            touchStartNDC = null;
+            touchZombieToSlice = null;
+            touchEndNDC = null;
+            touchEndUV = null;
+        }
+    }
+    console.log('Calculated Slice UVs: Start=', touchStartUV, 'End=', touchEndUV); // Log calculated UVs
+}, { passive: false }); 
