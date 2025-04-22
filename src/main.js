@@ -110,6 +110,13 @@ bloodTextureFiles.forEach(file => {
 });
 // < --- Blood Splatter ---
 
+// --- Score & Game State ---
+let score = 0;
+let lives = 3;
+let gameOver = false;
+let lastZombieKillTime = 0;
+const ZOMBIE_KILL_COOLDOWN = 0.2; // seconds
+
 // Raycaster for accurate UV mapping
 const raycaster = new THREE.Raycaster();
 let spawnIntervalId = null;
@@ -260,158 +267,6 @@ function getUVCoords(event) {
         // Return null if no intersection
         return null;
     }
-}
-
-// --- Platform Detection ---
-const isMobile = document.documentElement.classList.contains('mobile');
-
-// --- Event Listeners ---
-if (!isMobile) {
-  // Desktop: Use mouse events and webcam/hand tracking
-  console.log('Desktop mode detected. Initializing hand tracking and mouse controls.');
-  window.addEventListener('mousedown', (event) => {
-      // Check if assets are loaded - replace isSliced check with zombie check later
-      if (!zombieGeometry) return; 
-
-      // Always record NDC start
-      updateMousePosition(event); 
-      sliceStartNDC.copy(mouseNDC);
-      
-      const hitData = getUVCoords(event); // Now returns { uv, object }
-      if (hitData) {
-          sliceStartUV.copy(hitData.uv);
-          sliceStartValid = true;
-          zombieToSlice = hitData.object; // Store the hit zombie
-          isSlicing = true; // Only start slicing if we hit a zombie
-      } else {
-          sliceStartValid = false;
-          zombieToSlice = null;
-          isSlicing = false;
-      }
-      sliceEndValid = false; // Reset end validity
-  });
-
-  window.addEventListener('mousemove', (event) => {
-      if (isSlicing) {
-           updateMousePosition(event); 
-           // Optional: Update visual feedback line during drag
-      }
-  });
-
-  window.addEventListener('mouseup', (event) => {
-      // Ensure we started slicing on a zombie
-      if (isSlicing && zombieToSlice) { 
-          updateMousePosition(event);
-          sliceEndNDC.copy(mouseNDC);
-
-          // We don't strictly need the end UV if we allow ending off-mesh
-          // but we do need the end NDC for direction calculation
-          const hitData = getUVCoords(event);
-          if (hitData && hitData.object === zombieToSlice) { // Check if we ended on the *same* zombie
-              sliceEndUV.copy(hitData.uv);
-              sliceEndValid = true;
-          } else {
-              sliceEndValid = false; // Ended off-mesh or on a different zombie
-          }
-
-          // Only proceed if the drag was significant
-          if (sliceStartNDC.distanceTo(sliceEndNDC) > 0.02) {
-               // Pass the specific zombie to slice
-              calculateAndPerformSlice(zombieToSlice); 
-          }
-      }
-      // Reset state regardless of whether slice happened
-      isSlicing = false;
-      sliceStartValid = false; 
-      sliceEndValid = false;
-      zombieToSlice = null;
-  });
-
-  // Initialize hand tracking for desktop
-  createHandLandmarker(); 
-} else {
-  // Mobile: Use touch events for swipe slicing
-  console.log('Mobile mode detected. Initializing touch controls.');
-  let touchStartNDC = null;
-  let touchEndNDC = null;
-  let touchZombieToSlice = null;
-  let touchStartUV = null;
-  let touchEndUV = null;
-
-  function getTouchNDC(touch) {
-    return new THREE.Vector2(
-      (touch.clientX / window.innerWidth) * 2 - 1,
-      -(touch.clientY / window.innerHeight) * 2 + 1
-    );
-  }
-
-  window.addEventListener('touchstart', (event) => {
-    if (!zombieGeometry || gameOver) return;
-    const touch = event.touches[0];
-    touchStartNDC = getTouchNDC(touch);
-    
-    // Raycast to find zombie at start
-    raycaster.setFromCamera(touchStartNDC, camera);
-    const zombiesToTest = activeZombies.filter(z => !z.userData.isSliced);
-    const intersects = raycaster.intersectObjects(zombiesToTest);
-    if (intersects.length > 0) {
-      touchZombieToSlice = intersects[0].object;
-      touchStartUV = intersects[0].uv.clone(); // Store start UV if hit
-    } else {
-      touchZombieToSlice = null;
-      touchStartUV = null;
-    }
-    touchEndNDC = null; // Reset end data on new touch
-    touchEndUV = null;
-  }, { passive: false }); // Use passive: false if preventDefault might be needed
-
-  window.addEventListener('touchend', (event) => {
-    if (!touchStartNDC || !touchZombieToSlice || gameOver) {
-      touchStartNDC = null; // Ensure state is reset
-      touchZombieToSlice = null;
-      return;
-    }
-    const touch = event.changedTouches[0];
-    touchEndNDC = getTouchNDC(touch);
-    
-    if (touchStartNDC.distanceTo(touchEndNDC) > 0.02) {
-      // Calculate slice direction
-      const directionNDC = new THREE.Vector2().subVectors(touchEndNDC, touchStartNDC).normalize();
-      const directionUVApprox = new THREE.Vector2(directionNDC.x, directionNDC.y * camera.aspect).normalize();
-
-      // Raycast to see if the end point also hit the zombie
-      raycaster.setFromCamera(touchEndNDC, camera);
-      const endHit = raycaster.intersectObject(touchZombieToSlice)[0]; // Only test against the zombie we started on
-      
-      if (endHit) {
-        touchEndUV = endHit.uv.clone(); // Use the exact end UV
-      } else {
-        // End missed: Extend line from startUV outwards
-        const extendedEnd = intersectUVSquare(touchStartUV, directionUVApprox);
-        if (!extendedEnd) { // Check if extension was successful
-            touchStartNDC = null; // Reset state if slice fails
-            touchZombieToSlice = null;
-            return; 
-        }
-        touchEndUV = extendedEnd;
-      }
-
-      // Final check for point distance and validity before slicing
-      if (touchStartUV && touchEndUV && touchStartUV.distanceTo(touchEndUV) > 0.001) {
-        const finalStartUV = touchStartUV.clone().clampScalar(0, 1);
-        const finalEndUV = touchEndUV.clone().clampScalar(0, 1);
-        performSlice(touchZombieToSlice, finalStartUV, finalEndUV);
-      } else {
-          console.warn("Mobile slice points too close or invalid after calculation/extension.");
-      }
-    }
-    // Reset state after touch ends
-    touchStartNDC = null;
-    touchEndNDC = null;
-    touchZombieToSlice = null;
-    touchStartUV = null;
-    touchEndUV = null;
-  });
 }
 
 // Renamed from original updateMousePosition for clarity
@@ -1424,12 +1279,6 @@ createHandLandmarker(); // Start MediaPipe loading
 // ... (rest of functions: startZombieSpawner, stopZombieSpawner, calculateFloorY, calculatePathWidth) ... 
 
 // --- Score System --- >
-let score = 0;
-let lives = 3;
-let gameOver = false;
-let lastZombieKillTime = 0;
-const ZOMBIE_KILL_COOLDOWN = 0.2; // seconds
-
 function updateScoreDisplay() {
     const el = document.getElementById('scoreDisplay');
     if (el) {
@@ -1474,109 +1323,6 @@ if (typeof window !== 'undefined') {
         const btn = document.getElementById('playAgainBtn');
         if (btn) btn.onclick = () => window.location.reload();
     });
-}
-
-// At the end of the file or after DOMContentLoaded, initialize the score and hearts display:
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        updateScoreDisplay();
-        updateHeartsDisplay();
-    });
-} else {
-    updateScoreDisplay();
-    updateHeartsDisplay();
-} 
-
-// --- Platform-Specific Initialization ---
-// Moved this block to the end after all functions are defined
-if (!isMobile) {
-  // Desktop: Initialize hand tracking and mouse controls
-  console.log('Desktop mode detected. Initializing hand tracking and mouse controls.');
-  // Mouse listeners are already added globally
-  createHandLandmarker(); 
-} else {
-  // Mobile: Initialize touch controls
-  console.log('Mobile mode detected. Initializing touch controls.');
-  let touchStartNDC = null;
-  let touchEndNDC = null;
-  let touchZombieToSlice = null;
-  let touchStartUV = null;
-  let touchEndUV = null;
-
-  function getTouchNDC(touch) {
-    return new THREE.Vector2(
-      (touch.clientX / window.innerWidth) * 2 - 1,
-      -(touch.clientY / window.innerHeight) * 2 + 1
-    );
-  }
-
-  window.addEventListener('touchstart', (event) => {
-    if (!zombieGeometry || gameOver) return;
-    const touch = event.touches[0];
-    touchStartNDC = getTouchNDC(touch);
-    
-    // Raycast to find zombie at start
-    raycaster.setFromCamera(touchStartNDC, camera);
-    const zombiesToTest = activeZombies.filter(z => !z.userData.isSliced);
-    const intersects = raycaster.intersectObjects(zombiesToTest);
-    if (intersects.length > 0) {
-      touchZombieToSlice = intersects[0].object;
-      touchStartUV = intersects[0].uv.clone(); // Store start UV if hit
-    } else {
-      touchZombieToSlice = null;
-      touchStartUV = null;
-    }
-    touchEndNDC = null; // Reset end data on new touch
-    touchEndUV = null;
-  }, { passive: false }); // Use passive: false if preventDefault might be needed
-
-  window.addEventListener('touchend', (event) => {
-    if (!touchStartNDC || !touchZombieToSlice || gameOver) {
-      touchStartNDC = null; // Ensure state is reset
-      touchZombieToSlice = null;
-      return;
-    }
-    const touch = event.changedTouches[0];
-    touchEndNDC = getTouchNDC(touch);
-    
-    if (touchStartNDC.distanceTo(touchEndNDC) > 0.02) {
-      // Calculate slice direction
-      const directionNDC = new THREE.Vector2().subVectors(touchEndNDC, touchStartNDC).normalize();
-      const directionUVApprox = new THREE.Vector2(directionNDC.x, directionNDC.y * camera.aspect).normalize();
-
-      // Raycast to see if the end point also hit the zombie
-      raycaster.setFromCamera(touchEndNDC, camera);
-      const endHit = raycaster.intersectObject(touchZombieToSlice)[0]; // Only test against the zombie we started on
-      
-      if (endHit) {
-        touchEndUV = endHit.uv.clone(); // Use the exact end UV
-      } else {
-        // End missed: Extend line from startUV outwards
-        const extendedEnd = intersectUVSquare(touchStartUV, directionUVApprox);
-        if (!extendedEnd) { // Check if extension was successful
-            touchStartNDC = null; // Reset state if slice fails
-            touchZombieToSlice = null;
-            return; 
-        }
-        touchEndUV = extendedEnd;
-      }
-
-      // Final check for point distance and validity before slicing
-      if (touchStartUV && touchEndUV && touchStartUV.distanceTo(touchEndUV) > 0.001) {
-        const finalStartUV = touchStartUV.clone().clampScalar(0, 1);
-        const finalEndUV = touchEndUV.clone().clampScalar(0, 1);
-        performSlice(touchZombieToSlice, finalStartUV, finalEndUV);
-      } else {
-          console.warn("Mobile slice points too close or invalid after calculation/extension.");
-      }
-    }
-    // Reset state after touch ends
-    touchStartNDC = null;
-    touchEndNDC = null;
-    touchZombieToSlice = null;
-    touchStartUV = null;
-    touchEndUV = null;
-  });
 }
 
 // At the end of the file or after DOMContentLoaded, initialize the score and hearts display:
