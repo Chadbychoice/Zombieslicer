@@ -18,5 +18,6 @@
   },
   "engines": {
     "node": "18.x"
-  }
+  },
+  "postinstall": "chmod +x node_modules/.bin/vite"
 }
