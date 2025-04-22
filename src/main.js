@@ -1272,7 +1272,7 @@ function calculateAndPerformSliceHand(targetZombie, startUV, startNDC, endNDC, e
 }
 
 // --- Initialization --- >
-// createHandLandmarker(); // Moved initialization to the end
+createHandLandmarker(); // Start MediaPipe loading
 // animate(); // Original animate() call (KEEP THIS ONE)
 
 // ... (rest of functions: startZombieSpawner, stopZombieSpawner, calculateFloorY, calculatePathWidth) ... 
@@ -1336,77 +1336,73 @@ if (document.readyState === 'loading') {
     updateHeartsDisplay();
 } 
 
-// Mobile: Use touch events for swipe slicing
-console.log('Mobile mode detected.');
+// --- Desktop Mouse Slicing Event Listeners (Always added) ---
+window.addEventListener('mousedown', (event) => {
+    // Check if assets are loaded
+    if (!zombieGeometry || isMobile) return; // Ignore on mobile or if assets not ready
 
-// Ensure DOM is ready before trying to hide elements (backup for CSS)
-document.addEventListener('DOMContentLoaded', () => {
-    const webcamContainer = document.getElementById('webcam-container');
-    if (webcamContainer) webcamContainer.style.display = 'none';
-    const webcamBtn = document.getElementById('enableWebcamButton');
-    if (webcamBtn) webcamBtn.style.display = 'none';
-    console.log('Mobile: Attempted to hide webcam UI via JS.');
+    // Always record NDC start
+    updateMousePosition(event); 
+    sliceStartNDC.copy(mouseNDC);
+    
+    const hitData = getUVCoords(event); // Now returns { uv, object }
+    if (hitData) {
+        sliceStartUV.copy(hitData.uv);
+        sliceStartValid = true;
+        zombieToSlice = hitData.object; // Store the hit zombie
+        isSlicing = true; // Only start slicing if we hit a zombie
+    } else {
+        sliceStartValid = false;
+        zombieToSlice = null;
+        isSlicing = false;
+    }
+    sliceEndValid = false; // Reset end validity
 });
 
-let touchStartNDC = null;
-let touchEndNDC = null;
-let touchStartUV = null;
-let touchEndUV = null;
+window.addEventListener('mousemove', (event) => {
+    if (isSlicing && !isMobile) { // Only track mouse movement slicing on desktop
+         updateMousePosition(event); 
+         // Optional: Update visual feedback line during drag
+    }
+});
 
-window.addEventListener('touchstart', (event) => {
-    console.log('Touch Start Fired'); // Check if event fires
-    if (event.touches.length > 0) {
-        const touch = event.touches[0];
-        touchStartNDC = new THREE.Vector2(touch.clientX, touch.clientY);
-        touchStartUV = getUVCoords(event);
-        if (touchStartUV) {
-            touchZombieToSlice = touchStartUV.object;
+window.addEventListener('mouseup', (event) => {
+    // Ensure we started slicing on a zombie (and are on desktop)
+    if (isSlicing && zombieToSlice && !isMobile) { 
+        updateMousePosition(event);
+        sliceEndNDC.copy(mouseNDC);
+
+        // We don't strictly need the end UV if we allow ending off-mesh
+        // but we do need the end NDC for direction calculation
+        const hitData = getUVCoords(event);
+        if (hitData && hitData.object === zombieToSlice) { // Check if we ended on the *same* zombie
+            sliceEndUV.copy(hitData.uv);
+            sliceEndValid = true;
+        } else {
+            sliceEndValid = false; // Ended off-mesh or on a different zombie
+        }
+
+        // Only proceed if the drag was significant
+        if (sliceStartNDC.distanceTo(sliceEndNDC) > 0.02) {
+             // Pass the specific zombie to slice
+            calculateAndPerformSlice(zombieToSlice); 
         }
     }
-}, { passive: false });
+    // Reset state regardless of whether slice happened or platform
+    isSlicing = false;
+    sliceStartValid = false; 
+    sliceEndValid = false;
+    zombieToSlice = null;
+});
 
-window.addEventListener('touchend', (event) => {
-    console.log('Touch End Fired'); // Check if event fires
-    if (!touchStartNDC || !touchZombieToSlice || gameOver) {
-        console.log('Touch End Aborted: No start data or game over.');
-        touchStartNDC = null; // Ensure state is reset
-        touchZombieToSlice = null;
-        touchEndNDC = null;
-        touchEndUV = null;
-    } else {
-        touchEndNDC = new THREE.Vector2(event.touches[0].clientX, event.touches[0].clientY);
-        touchEndUV = getUVCoords(event);
-        if (touchEndUV && touchEndUV.object === touchZombieToSlice) {
-            calculateAndPerformSlice(touchZombieToSlice);
-            touchStartNDC = null;
-            touchZombieToSlice = null;
-            touchEndNDC = null;
-            touchEndUV = null;
-        }
-    }
-    console.log('Touch Start: NDC=', touchStartNDC, 'Hit Zombie=', touchZombieToSlice); // Log start data
-}, { passive: false });
-
-console.log('Mobile touch listeners added.'); // Confirm listeners are added
-
-window.addEventListener('touchend', (event) => {
-    console.log('Touch End Fired'); // Check if event fires
-    if (!touchStartNDC || !touchZombieToSlice || gameOver) {
-        console.log('Touch End Aborted: No start data or game over.');
-        touchStartNDC = null; // Ensure state is reset
-        touchZombieToSlice = null;
-        touchEndNDC = null;
-        touchEndUV = null;
-    } else {
-        touchEndNDC = new THREE.Vector2(event.touches[0].clientX, event.touches[0].clientY);
-        touchEndUV = getUVCoords(event);
-        if (touchEndUV && touchEndUV.object === touchZombieToSlice) {
-            calculateAndPerformSlice(touchZombieToSlice);
-            touchStartNDC = null;
-            touchZombieToSlice = null;
-            touchEndNDC = null;
-            touchEndUV = null;
-        }
-    }
-    console.log('Calculated Slice UVs: Start=', touchStartUV, 'End=', touchEndUV); // Log calculated UVs
-}, { passive: false }); 
+// Moved this block to the end after all functions are defined
+if (!isMobile) {
+  // Desktop: Initialize hand tracking and mouse controls
+  console.log('Desktop mode detected. Initializing hand tracking.');
+  // Mouse listeners are already added globally
+  createHandLandmarker(); 
+} else {
+  // Mobile: Initialize touch controls
+  console.log('Mobile mode detected. Initializing touch controls.');
+  let touchStartNDC = null;
+} 
